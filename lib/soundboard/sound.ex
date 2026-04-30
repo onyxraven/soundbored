@@ -19,6 +19,8 @@ defmodule Soundboard.Sound do
     field :source_type, :string, default: "local"
     field :description, :string
     field :volume, :float, default: 1.0
+    field :color, :string
+    field :image_filename, :string
     belongs_to :user, Soundboard.Accounts.User
     has_many :user_sound_settings, Soundboard.UserSoundSetting
 
@@ -38,7 +40,9 @@ defmodule Soundboard.Sound do
       :source_type,
       :description,
       :user_id,
-      :volume
+      :volume,
+      :color,
+      :image_filename
     ])
     |> validate_required([:user_id])
     |> validate_source_type()
