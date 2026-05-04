@@ -9,51 +9,16 @@ defmodule Soundboard.Sounds.Management do
   """
 
   alias Soundboard.{AudioPlayer, Repo, Sound, UploadsPath, Volume}
+  alias Soundboard.Sounds.ImageProcessing
   require Logger
 
   def update_sound(%Sound{} = sound, user_id, params) do
     Repo.transaction(fn ->
-      db_sound =
-        Repo.get!(Sound, sound.id)
-        |> Repo.preload(:user_sound_settings)
-
+      db_sound = Repo.get!(Sound, sound.id) |> Repo.preload(:user_sound_settings)
       old_path = UploadsPath.file_path(db_sound.filename)
-      new_filename = params["filename"] <> Path.extname(db_sound.filename)
-      new_path = UploadsPath.file_path(new_filename)
-
-      sound_params = %{
-        filename: new_filename,
-        source_type: params["source_type"] || db_sound.source_type,
-        url: params["url"],
-        user_id: db_sound.user_id || user_id,
-        volume:
-          params["volume"]
-          |> Volume.percent_to_decimal(Volume.decimal_to_percent(db_sound.volume)),
-        color: params["color"],
-        image_filename:
-          cond do
-            params["image_filename"] -> params["image_filename"]
-            params["clear_image"] -> nil
-            true -> db_sound.image_filename
-          end
-      }
-
-      updated_sound =
-        case Sound.changeset(db_sound, sound_params) |> Repo.update() do
-          {:ok, updated_sound} ->
-            if (params["image_filename"] && params["image_filename"] != db_sound.image_filename) ||
-                 params["clear_image"] do
-              Soundboard.Sounds.ImageProcessing.delete_image(db_sound.image_filename)
-            end
-
-            updated_sound = update_user_settings(db_sound, user_id, updated_sound, params)
-            AudioPlayer.invalidate_cache(db_sound.filename)
-            AudioPlayer.invalidate_cache(updated_sound.filename)
-            updated_sound
-
-          {:error, changeset} ->
-            Repo.rollback(changeset)
-        end
+      sound_params = build_sound_params(db_sound, user_id, params)
+      updated_sound = apply_sound_update(db_sound, user_id, sound_params, params)
+      new_path = UploadsPath.file_path(sound_params.filename)
 
       case maybe_rename_local_file(db_sound, old_path, new_path) do
         :ok -> updated_sound
@@ -69,11 +34,54 @@ defmodule Soundboard.Sounds.Management do
          {:ok, _deleted_sound} <- Repo.delete(db_sound) do
       AudioPlayer.invalidate_cache(db_sound.filename)
       maybe_remove_local_file(db_sound)
-      Soundboard.Sounds.ImageProcessing.delete_image(db_sound.image_filename)
+      ImageProcessing.delete_image(db_sound.image_filename)
       :ok
     else
       false -> {:error, :forbidden}
       {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp build_sound_params(db_sound, user_id, params) do
+    %{
+      filename: params["filename"] <> Path.extname(db_sound.filename),
+      source_type: params["source_type"] || db_sound.source_type,
+      url: params["url"],
+      user_id: db_sound.user_id || user_id,
+      volume:
+        params["volume"]
+        |> Volume.percent_to_decimal(Volume.decimal_to_percent(db_sound.volume)),
+      color: params["color"],
+      image_filename: resolve_image_filename(db_sound, params)
+    }
+  end
+
+  defp resolve_image_filename(db_sound, params) do
+    cond do
+      params["image_filename"] -> params["image_filename"]
+      params["clear_image"] -> nil
+      true -> db_sound.image_filename
+    end
+  end
+
+  defp apply_sound_update(db_sound, user_id, sound_params, params) do
+    case Sound.changeset(db_sound, sound_params) |> Repo.update() do
+      {:ok, updated_sound} ->
+        maybe_cleanup_old_image(db_sound, params)
+        updated_sound = update_user_settings(db_sound, user_id, updated_sound, params)
+        AudioPlayer.invalidate_cache(db_sound.filename)
+        AudioPlayer.invalidate_cache(updated_sound.filename)
+        updated_sound
+
+      {:error, changeset} ->
+        Repo.rollback(changeset)
+    end
+  end
+
+  defp maybe_cleanup_old_image(db_sound, params) do
+    if (params["image_filename"] && params["image_filename"] != db_sound.image_filename) ||
+         params["clear_image"] do
+      ImageProcessing.delete_image(db_sound.image_filename)
     end
   end
 
