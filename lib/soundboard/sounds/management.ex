@@ -13,20 +13,30 @@ defmodule Soundboard.Sounds.Management do
   require Logger
 
   def update_sound(%Sound{} = sound, user_id, params) do
-    Repo.transaction(fn ->
-      db_sound = Repo.get!(Sound, sound.id) |> Repo.preload(:user_sound_settings)
-      sound_params = build_sound_params(db_sound, user_id, params)
-      updated_sound = apply_sound_update(db_sound, user_id, sound_params, params)
+    transaction_result =
+      Repo.transaction(fn ->
+        db_sound = Repo.get!(Sound, sound.id) |> Repo.preload(:user_sound_settings)
+        sound_params = build_sound_params(db_sound, user_id, params)
+        updated_sound = apply_sound_update(db_sound, user_id, sound_params, params)
 
-      with {:ok, old_path} <- UploadsPath.safe_joined_path(db_sound.filename),
-           {:ok, new_path} <- UploadsPath.safe_joined_path(sound_params.filename),
-           :ok <- maybe_rename_local_file(db_sound, old_path, new_path) do
-        updated_sound
-      else
-        :error -> Repo.rollback("invalid file path")
-        {:error, error} -> Repo.rollback(error)
-      end
-    end)
+        with {:ok, old_path} <- UploadsPath.safe_joined_path(db_sound.filename),
+             {:ok, new_path} <- UploadsPath.safe_joined_path(sound_params.filename),
+             :ok <- maybe_rename_local_file(db_sound, old_path, new_path) do
+          {updated_sound, db_sound}
+        else
+          :error -> Repo.rollback("invalid file path")
+          {:error, error} -> Repo.rollback(error)
+        end
+      end)
+
+    case transaction_result do
+      {:ok, {updated_sound, db_sound}} ->
+        maybe_cleanup_old_image(db_sound, params)
+        {:ok, updated_sound}
+
+      error ->
+        error
+    end
   end
 
   def delete_sound(%Sound{} = sound, user_id) do
@@ -69,7 +79,6 @@ defmodule Soundboard.Sounds.Management do
   defp apply_sound_update(db_sound, user_id, sound_params, params) do
     case Sound.changeset(db_sound, sound_params) |> Repo.update() do
       {:ok, updated_sound} ->
-        maybe_cleanup_old_image(db_sound, params)
         updated_sound = update_user_settings(db_sound, user_id, updated_sound, params)
         AudioPlayer.invalidate_cache(db_sound.filename)
         AudioPlayer.invalidate_cache(updated_sound.filename)
