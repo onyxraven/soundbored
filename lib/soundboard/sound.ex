@@ -47,6 +47,9 @@ defmodule Soundboard.Sound do
     |> validate_required([:user_id])
     |> validate_source_type()
     |> validate_volume()
+    |> validate_format(:color, ~r/^#[0-9a-fA-F]{3}([0-9a-fA-F]{3}([0-9a-fA-F]{2})?)?$/,
+      message: "must be a hex color (e.g. #f00, #ff0000, #ff0000ff)"
+    )
     |> unique_constraint(:filename, name: :sounds_filename_index)
     |> put_tags(attrs)
   end
