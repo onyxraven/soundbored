@@ -15,13 +15,15 @@ defmodule Soundboard.Sounds.Management do
   def update_sound(%Sound{} = sound, user_id, params) do
     Repo.transaction(fn ->
       db_sound = Repo.get!(Sound, sound.id) |> Repo.preload(:user_sound_settings)
-      old_path = UploadsPath.file_path(db_sound.filename)
       sound_params = build_sound_params(db_sound, user_id, params)
       updated_sound = apply_sound_update(db_sound, user_id, sound_params, params)
-      new_path = UploadsPath.file_path(sound_params.filename)
 
-      case maybe_rename_local_file(db_sound, old_path, new_path) do
-        :ok -> updated_sound
+      with {:ok, old_path} <- UploadsPath.safe_joined_path(db_sound.filename),
+           {:ok, new_path} <- UploadsPath.safe_joined_path(sound_params.filename),
+           :ok <- maybe_rename_local_file(db_sound, old_path, new_path) do
+        updated_sound
+      else
+        :error -> Repo.rollback("invalid file path")
         {:error, error} -> Repo.rollback(error)
       end
     end)
@@ -86,7 +88,11 @@ defmodule Soundboard.Sounds.Management do
   end
 
   defp maybe_remove_local_file(%{source_type: "local", filename: filename}) do
-    _ = File.rm(UploadsPath.file_path(filename))
+    case UploadsPath.safe_joined_path(filename) do
+      {:ok, path} -> File.rm(path)
+      :error -> :ok
+    end
+
     :ok
   end
 
